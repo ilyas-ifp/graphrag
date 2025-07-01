@@ -9,6 +9,7 @@ from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+import re
 import pandas as pd
 import tiktoken
 
@@ -167,6 +168,7 @@ def split_multiple_texts_on_tokens(
     texts: list[str], tokenizer: Tokenizer, tick: ProgressTicker
 ) -> list[TextChunk]:
     """Split multiple texts and return chunks with metadata using the tokenizer."""
+    print("\n\nUsing MD text splitting :) \n\n")
     result = []
     mapped_ids = []
 
@@ -194,4 +196,184 @@ def split_multiple_texts_on_tokens(
         cur_idx = min(start_idx + tokenizer.tokens_per_chunk, len(input_ids))
         chunk_ids = input_ids[start_idx:cur_idx]
 
+    return result
+
+def split_markdown_on_tokens(
+    texts: list[str], 
+    tokenizer: Tokenizer, 
+    tick: ProgressTicker,
+) -> list[TextChunk]:
+    """Split markdown texts using predefined regex patterns and return token-based chunks."""
+    
+    # Predefined markdown separators (regex patterns)
+    MARKDOWN_SEPARATORS = [
+        r"\n#{1,6} ",      # Markdown headings
+        r"```\n",          # End of code block
+        r"\n\*\*\*+\n",    # Horizontal lines with *
+        r"\n---+\n",       # Horizontal lines with -
+        r"\n___+\n",       # Horizontal lines with _
+        "\n\n",            # Double newlines
+        "\n",              # Single newlines
+        " ",               # Spaces
+        "",                # Character level
+    ]
+    
+    def _split_with_separators(text: str, separators: list[str]) -> list[str]:
+        """Recursively split text using separators."""
+        if not text.strip():
+            return []
+        
+        # Find the first separator that works
+        separator = separators[-1]  # Default to last separator
+        remaining_separators = []
+        
+        for i, sep in enumerate(separators):
+            if sep == "":
+                separator = sep
+                break
+            
+            # Use regex for non-empty separators
+            if re.search(sep if len(sep) > 3 else re.escape(sep), text):
+                separator = sep
+                remaining_separators = separators[i + 1:]
+                break
+        
+        # Split the text
+        if separator == "":
+            splits = list(text)
+        else:
+            pattern = separator if len(separator) > 3 else re.escape(separator)
+            splits = [s for s in re.split(pattern, text) if s.strip()]
+        
+        # Process splits
+        result = []
+        current_group = []
+        
+        for split in splits:
+            token_count = len(tokenizer.encode(split))
+            
+            if token_count <= tokenizer.tokens_per_chunk:
+                current_group.append(split)
+            else:
+                # Process accumulated small splits
+                if current_group:
+                    merged = _merge_small_splits(current_group, separator)
+                    result.extend(merged)
+                    current_group = []
+                
+                # Handle large split
+                if remaining_separators:
+                    result.extend(_split_with_separators(split, remaining_separators))
+                else:
+                    # Force token-based splitting
+                    result.extend(_force_split_by_tokens(split))
+        
+        # Process remaining small splits
+        if current_group:
+            merged = _merge_small_splits(current_group, separator)
+            result.extend(merged)
+        
+        return result
+    
+    def _merge_small_splits(splits: list[str], separator: str) -> list[str]:
+        """Merge small splits respecting token limits."""
+        if not splits:
+            return []
+        
+        result = []
+        current_chunk = ""
+        
+        for split in splits:
+            # Try adding this split to current chunk
+            test_chunk = current_chunk + (separator if current_chunk else "") + split
+            test_tokens = len(tokenizer.encode(test_chunk))
+            
+            if test_tokens <= tokenizer.tokens_per_chunk:
+                current_chunk = test_chunk
+            else:
+                # Current chunk is full, save it and start new one
+                if current_chunk:
+                    result.append(current_chunk)
+                current_chunk = split
+        
+        if current_chunk:
+            result.append(current_chunk)
+        
+        return result
+    
+    def _force_split_by_tokens(text: str) -> list[str]:
+        """Force split by tokens when no separators work."""
+        if not text.strip():
+            return []
+        
+        encoded = tokenizer.encode(text)
+        chunks = []
+        
+        start_idx = 0
+        while start_idx < len(encoded):
+            end_idx = min(start_idx + tokenizer.tokens_per_chunk, len(encoded))
+            chunk_tokens = encoded[start_idx:end_idx]
+            chunk_text = tokenizer.decode(chunk_tokens)
+            
+            if chunk_text.strip():
+                chunks.append(chunk_text)
+            
+            if end_idx == len(encoded):
+                break
+            
+            start_idx = max(start_idx + 1, end_idx - tokenizer.chunk_overlap)
+        
+        return chunks
+    
+    # Main processing
+    result = []
+    all_text_chunks = []
+    
+    # First, split all texts using markdown separators
+    for source_doc_idx, text in enumerate(texts):
+        if tick:
+            tick(1)
+        
+        if not text.strip():
+            continue
+            
+        # Split using markdown separators
+        text_chunks = _split_with_separators(text, MARKDOWN_SEPARATORS)
+        
+        # Tag each chunk with its source document
+        for chunk in text_chunks:
+            if chunk.strip():
+                all_text_chunks.append((source_doc_idx, chunk))
+    
+    # Now create token-based chunks with metadata (similar to split_multiple_texts_on_tokens)
+    if not all_text_chunks:
+        return []
+    
+    # Encode all chunks and create input_ids with source tracking
+    input_ids = []
+    for source_doc_idx, chunk in all_text_chunks:
+        encoded = tokenizer.encode(chunk)
+        for token_id in encoded:
+            input_ids.append((source_doc_idx, token_id))
+    
+    # Create final chunks with overlap
+    start_idx = 0
+    while start_idx < len(input_ids):
+        end_idx = min(start_idx + tokenizer.tokens_per_chunk, len(input_ids))
+        chunk_ids = input_ids[start_idx:end_idx]
+        
+        chunk_text = tokenizer.decode([token_id for _, token_id in chunk_ids])
+        doc_indices = list({doc_idx for doc_idx, _ in chunk_ids})
+        
+        result.append(TextChunk(
+            text_chunk=chunk_text,
+            source_doc_indices=doc_indices,
+            n_tokens=len(chunk_ids)
+        ))
+        
+        if end_idx == len(input_ids):
+            break
+        
+        start_idx += tokenizer.tokens_per_chunk - tokenizer.chunk_overlap
+    
     return result

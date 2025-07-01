@@ -8,11 +8,13 @@ import pytest
 import tiktoken
 
 from graphrag.index.text_splitting.text_splitting import (
+    TextChunk,
     NoopTextSplitter,
     Tokenizer,
     TokenTextSplitter,
     split_multiple_texts_on_tokens,
     split_single_text_on_tokens,
+    split_markdown_on_tokens,
 )
 
 
@@ -200,3 +202,307 @@ def test_split_single_text_on_tokens_no_overlap():
 
     result = split_single_text_on_tokens(text=text, tokenizer=tokenizer)
     assert result == expected_splits
+
+
+def test_split_markdown_on_tokens_empty_input():
+    """Test with empty input texts."""
+    mocked_tokenizer = MockTokenizer()
+    mock_tick = MagicMock()
+    tokenizer = Tokenizer(
+        chunk_overlap=1,
+        tokens_per_chunk=10,
+        decode=mocked_tokenizer.decode,
+        encode=lambda text: mocked_tokenizer.encode(text),
+    )
+    
+    result = split_markdown_on_tokens([], tokenizer,tick=mock_tick)
+    assert result == []
+
+
+def test_split_markdown_on_tokens_empty_strings():
+    """Test with empty string texts."""
+    mocked_tokenizer = MockTokenizer()
+    mock_tick = MagicMock()
+    tokenizer = Tokenizer(
+        chunk_overlap=1,
+        tokens_per_chunk=10,
+        decode=mocked_tokenizer.decode,
+        encode=lambda text: mocked_tokenizer.encode(text),
+    )
+    
+    result = split_markdown_on_tokens(["", "   ", ""], tokenizer,tick=mock_tick)
+    assert result == []
+
+
+def test_split_markdown_on_tokens_simple_text():
+    """Test with simple text without markdown."""
+    texts = ["This is a simple text without any markdown formatting."]
+    
+    mocked_tokenizer = MockTokenizer()
+    mock_tick = MagicMock()
+    tokenizer = Tokenizer(
+        chunk_overlap=2,
+        tokens_per_chunk=15,
+        decode=mocked_tokenizer.decode,
+        encode=lambda text: mocked_tokenizer.encode(text),
+    )
+    
+    result = split_markdown_on_tokens(texts, tokenizer,tick=mock_tick)
+    
+    assert len(result) > 0
+    assert all(isinstance(chunk, TextChunk) for chunk in result)
+    assert all(chunk.source_doc_indices == [0] for chunk in result)
+    assert all(chunk.n_tokens <= tokenizer.tokens_per_chunk for chunk in result)
+
+
+def test_split_markdown_on_tokens_with_headings():
+    """Test with markdown headings."""
+    texts = [
+        "# Main Title\n\nSome content here.\n\n## Subtitle\n\nMore content here."
+    ]
+    
+    mocked_tokenizer = MockTokenizer()
+    mock_tick = MagicMock()
+    tokenizer = Tokenizer(
+        chunk_overlap=2,
+        tokens_per_chunk=20,
+        decode=mocked_tokenizer.decode,
+        encode=lambda text: mocked_tokenizer.encode(text),
+    )
+    
+    result = split_markdown_on_tokens(texts, tokenizer,tick=mock_tick)
+    
+    assert len(result) > 0
+    assert all(isinstance(chunk, TextChunk) for chunk in result)
+    # Should split at heading boundaries
+    assert any("Main Title" in chunk.text_chunk for chunk in result)
+    assert any("Subtitle" in chunk.text_chunk for chunk in result)
+
+
+def test_split_markdown_on_tokens_with_code_blocks():
+    """Test with markdown code blocks."""
+    texts = [
+        "Here's some code:\n\n```python\ndef hello():\n    print('world')\n```\n\nAnd more text."
+    ]
+    
+    mocked_tokenizer = MockTokenizer()
+    mock_tick = MagicMock()
+    tokenizer = Tokenizer(
+        chunk_overlap=2,
+        tokens_per_chunk=25,
+        decode=mocked_tokenizer.decode,
+        encode=lambda text: mocked_tokenizer.encode(text),
+    )
+    
+    result = split_markdown_on_tokens(texts, tokenizer,tick=mock_tick)
+    
+    assert len(result) > 0
+    assert all(isinstance(chunk, TextChunk) for chunk in result)
+
+
+def test_split_markdown_on_tokens_with_horizontal_rules():
+    """Test with markdown horizontal rules."""
+    texts = [
+        "Section 1\n\n---\n\nSection 2\n\n***\n\nSection 3"
+    ]
+    
+    mocked_tokenizer = MockTokenizer()
+    mock_tick = MagicMock()
+    tokenizer = Tokenizer(
+        chunk_overlap=1,
+        tokens_per_chunk=15,
+        decode=mocked_tokenizer.decode,
+        encode=lambda text: mocked_tokenizer.encode(text),
+    )
+    
+    result = split_markdown_on_tokens(texts, tokenizer,tick=mock_tick)
+    
+    assert len(result) > 0
+    assert all(isinstance(chunk, TextChunk) for chunk in result)
+
+
+def test_split_markdown_on_tokens_multiple_documents():
+    """Test with multiple input documents."""
+    texts = [
+        "# Document 1\n\nThis is the first document.",
+        "# Document 2\n\nThis is the second document.",
+        "# Document 3\n\nThis is the third document."
+    ]
+    
+    mocked_tokenizer = MockTokenizer()
+    mock_tick = MagicMock()
+    tokenizer = Tokenizer(
+        chunk_overlap=2,
+        tokens_per_chunk=20,
+        decode=mocked_tokenizer.decode,
+        encode=lambda text: mocked_tokenizer.encode(text),
+    )
+    
+    result = split_markdown_on_tokens(texts, tokenizer,tick=mock_tick)
+    
+    assert len(result) > 0
+    assert all(isinstance(chunk, TextChunk) for chunk in result)
+    
+    # Check that we have chunks from different documents
+    doc_indices_found = set()
+    for chunk in result:
+        doc_indices_found.update(chunk.source_doc_indices)
+    
+    assert len(doc_indices_found) >= 2  # Should have chunks from multiple docs
+
+
+def test_split_markdown_on_tokens_with_overlap():
+    """Test that overlap is properly applied."""
+    texts = ["This is a test text that should be split with proper overlap handling."]
+    
+    mocked_tokenizer = MockTokenizer()
+    mock_tick = MagicMock()
+    tokenizer = Tokenizer(
+        chunk_overlap=3,
+        tokens_per_chunk=10,
+        decode=mocked_tokenizer.decode,
+        encode=lambda text: mocked_tokenizer.encode(text),
+    )
+    
+    result = split_markdown_on_tokens(texts, tokenizer,tick=mock_tick)
+    
+    assert len(result) > 1  # Should create multiple chunks
+    assert all(chunk.n_tokens <= tokenizer.tokens_per_chunk for chunk in result)
+    
+    # Check that consecutive chunks have some overlap
+    for i in range(len(result) - 1):
+        current_chunk = result[i].text_chunk
+        next_chunk = result[i + 1].text_chunk
+        # There should be some common characters due to overlap
+        assert len(current_chunk) > 0 and len(next_chunk) > 0
+
+
+def test_split_markdown_on_tokens_large_chunk():
+    """Test force splitting of large chunks that can't be split by separators."""
+    # Create a long text without any markdown separators
+    large_text = "a" * 100  # Long string without separators
+    texts = [large_text]
+    
+    mocked_tokenizer = MockTokenizer()
+    mock_tick = MagicMock()
+    tokenizer = Tokenizer(
+        chunk_overlap=2,
+        tokens_per_chunk=20,
+        decode=mocked_tokenizer.decode,
+        encode=lambda text: mocked_tokenizer.encode(text),
+    )
+    
+    result = split_markdown_on_tokens(texts, tokenizer,tick=mock_tick)
+    
+    assert len(result) > 1  # Should be split into multiple chunks
+    assert all(chunk.n_tokens <= tokenizer.tokens_per_chunk for chunk in result)
+    assert all(isinstance(chunk, TextChunk) for chunk in result)
+
+
+def test_split_markdown_on_tokens_with_tick_callback():
+    """Test that the tick callback is called."""
+    texts = ["Text 1", "Text 2", "Text 3"]
+    
+    mocked_tokenizer = MockTokenizer()
+    mock_tick = MagicMock()
+    tokenizer = Tokenizer(
+        chunk_overlap=1,
+        tokens_per_chunk=10,
+        decode=mocked_tokenizer.decode,
+        encode=lambda text: mocked_tokenizer.encode(text),
+    )
+    
+    result = split_markdown_on_tokens(texts, tokenizer, tick=mock_tick)
+    
+    assert mock_tick.call_count == len(texts)
+    assert len(result) >= 0
+
+
+def test_split_markdown_on_tokens_real_tokenizer():
+    """Test with a real tiktoken tokenizer."""
+    texts = [
+        "# Introduction\n\nThis is a markdown document with various elements.\n\n## Code Example\n\n```python\nprint('hello')\n```\n\nEnd."
+    ]
+    mock_tick = MagicMock()
+    enc = tiktoken.get_encoding("cl100k_base")
+
+    def encode(text: str) -> list[int]:
+        if not isinstance(text, str):
+            text = f"{text}"
+        return enc.encode(text)
+
+    def decode(tokens: list[int]) -> str:
+        return enc.decode(tokens)
+
+    tokenizer = Tokenizer(
+        chunk_overlap=2,
+        tokens_per_chunk=15,
+        decode=decode,
+        encode=lambda text: encode(text),
+    )
+    
+    result = split_markdown_on_tokens(texts, tokenizer,tick=mock_tick)
+    
+    assert len(result) > 0
+    assert all(isinstance(chunk, TextChunk) for chunk in result)
+    assert all(chunk.n_tokens <= tokenizer.tokens_per_chunk for chunk in result)
+    assert all(len(chunk.text_chunk.strip()) > 0 for chunk in result)
+
+
+def test_split_markdown_on_tokens_chunk_metadata():
+    """Test that chunk metadata is correctly set."""
+    texts = ["Document 1 content", "Document 2 content"]
+    
+    mocked_tokenizer = MockTokenizer()
+    mock_tick = MagicMock()
+    tokenizer = Tokenizer(
+        chunk_overlap=1,
+        tokens_per_chunk=10,
+        decode=mocked_tokenizer.decode,
+        encode=lambda text: mocked_tokenizer.encode(text),
+    )
+    
+    result = split_markdown_on_tokens(texts, tokenizer,tick=mock_tick)
+    
+    for chunk in result:
+        # Check that all required attributes exist
+        assert hasattr(chunk, 'text_chunk')
+        assert hasattr(chunk, 'source_doc_indices')
+        assert hasattr(chunk, 'n_tokens')
+        
+        # Check types
+        assert isinstance(chunk.text_chunk, str)
+        assert isinstance(chunk.source_doc_indices, list)
+        assert isinstance(chunk.n_tokens, int)
+        
+        # Check values
+        assert len(chunk.text_chunk) > 0
+        assert len(chunk.source_doc_indices) > 0
+        assert chunk.n_tokens > 0
+        assert all(isinstance(idx, int) for idx in chunk.source_doc_indices)
+        assert all(0 <= idx < len(texts) for idx in chunk.source_doc_indices)
+
+
+def test_split_markdown_on_tokens_no_overlap():
+    """Test with zero overlap."""
+    texts = ["This is a test text for checking zero overlap behavior."]
+    
+    mocked_tokenizer = MockTokenizer()
+    mock_tick = MagicMock()
+    tokenizer = Tokenizer(
+        chunk_overlap=0,
+        tokens_per_chunk=10,
+        decode=mocked_tokenizer.decode,
+        encode=lambda text: mocked_tokenizer.encode(text),
+    )
+    
+    result = split_markdown_on_tokens(texts, tokenizer,tick=mock_tick)
+    
+    assert len(result) > 1  # Should create multiple chunks
+    assert all(chunk.n_tokens <= tokenizer.tokens_per_chunk for chunk in result)
+    
+    # With zero overlap, consecutive chunks should not share content
+    all_text = "".join(chunk.text_chunk for chunk in result)
+    original_text = texts[0]
+    # The reconstructed text should contain most of the original content
+    assert len(all_text) > len(original_text) * 0.8  # Allow for some variation

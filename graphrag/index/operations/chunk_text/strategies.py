@@ -13,6 +13,7 @@ from graphrag.index.operations.chunk_text.typing import TextChunk
 from graphrag.index.text_splitting.text_splitting import (
     Tokenizer,
     split_multiple_texts_on_tokens,
+    split_markdown_on_tokens,
 )
 from graphrag.logger.progress import ProgressTicker
 
@@ -43,7 +44,7 @@ def run_tokens(
     encoding_name = config.encoding_model
 
     encode, decode = get_encoding_fn(encoding_name)
-    return split_multiple_texts_on_tokens(
+    return split_markdown_on_tokens(
         input,
         Tokenizer(
             chunk_overlap=chunk_overlap,
